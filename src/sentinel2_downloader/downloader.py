@@ -7,6 +7,7 @@ import planetary_computer
 import io
 import rasterio
 from rasterio.io import MemoryFile
+from dateutil.parser import isoparse
 
 def download(url, verbose=False):
     """
@@ -15,7 +16,10 @@ def download(url, verbose=False):
         url (str): The URL to download the data from.
         verbose (bool, optional): If True, displays a progress bar during the download. Defaults to False.
     Returns:
-        numpy.ndarray: The downloaded data as a NumPy array of type uint8.
+        list: A list containing the downloaded images as a list of NumPy arrays.
+        list: A list of MemoryFile objects containing the downloaded images.
+    Raises:
+        Exception: If the date of the image cannot be parsed to be included in the image suffix tag.
     """
     response = requests.get(url, stream=True)
     total_size = int(response.headers.get("content-length", 0))
@@ -75,60 +79,75 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         for item in items:
             print(f"Image ID: {item.id}, Cloud Cover: {item.properties['eo:cloud_cover']}%, Date: {item.properties['datetime']}")
 
-    # Select the least cloudy image
-    selected_item = sorted(items, key=lambda x: x.properties["eo:cloud_cover"])[0]
-    assets = selected_item.assets
-    
-    # Get RGB bands download links (blue, green, red)
-    if api == 'microsoft':
-        blue_href = assets["B02"].href
-        green_href = assets["B03"].href
-        red_href = assets["B04"].href
-    elif api == 'element84':
-        blue_href = assets["blue"].href
-        green_href = assets["green"].href
-        red_href = assets["red"].href
+    memfile_list = []
+    rgb_list = []
 
-    # Estimate file sizes before downloading
-    if verbose:
-        estimated_sizes = {}
-        for color, href in zip(["blue", "green", "red"], [blue_href, green_href, red_href]):
-            response = requests.head(href)
-            size = int(response.headers.get("Content-Length", 0)) / (1024 * 1024)
-            estimated_sizes[color] = size
+    for item in items:
+        assets = item.assets
         
-        total_size = sum(estimated_sizes.values())
-        print(f"Estimated download size: {total_size:.2f} MB (Blue: {estimated_sizes['blue']:.2f} MB, Green: {estimated_sizes['green']:.2f} MB, Red: {estimated_sizes['red']:.2f} MB)")
+        # Get RGB bands download links (blue, green, red)
+        if api == 'microsoft': # Microsoft api is usually faster than element84
+            blue_href = assets["B02"].href
+            green_href = assets["B03"].href
+            red_href = assets["B04"].href
+        elif api == 'element84':
+            blue_href = assets["blue"].href
+            green_href = assets["green"].href
+            red_href = assets["red"].href
 
-    b, meta_b, transform, crs = download(blue_href, verbose=verbose)
-    g, _, _, _ = download(green_href, verbose=verbose)
-    r, _, _, _ = download(red_href, verbose=verbose)
+        # Estimate file sizes before downloading
+        if verbose:
+            estimated_sizes = {}
+            for color, href in zip(["blue", "green", "red"], [blue_href, green_href, red_href]):
+                response = requests.head(href)
+                size = int(response.headers.get("Content-Length", 0)) / (1024 * 1024)
+                estimated_sizes[color] = size
+            
+            total_size = sum(estimated_sizes.values())
+            print(f"Estimated download size: {total_size:.2f} MB (Blue: {estimated_sizes['blue']:.2f} MB, Green: {estimated_sizes['green']:.2f} MB, Red: {estimated_sizes['red']:.2f} MB)")
 
+        b, meta_b, transform, crs = download(blue_href, verbose=verbose)
+        g, _, _, _ = download(green_href, verbose=verbose)
+        r, _, _, _ = download(red_href, verbose=verbose)
+
+        
+        rgb = np.stack([r, g, b], axis=0)
+
+        meta_b.update({
+            "count": 3,
+            "dtype": rgb.dtype,
+            "driver": "GTiff",
+            "transform": transform,
+            "crs": crs
+        })
+
+        memfile = MemoryFile()
+        with memfile.open(**meta_b) as dst:
+            dst.write(rgb[0], 1)
+            dst.write(rgb[1], 2)
+            dst.write(rgb[2], 3)
+            try:
+                date = isoparse(item.properties["datetime"])
+                dst.update_tags(
+                    Title="Sentinel-2 RGB Composite",
+                    CloudCover=item.properties["eo:cloud_cover"],
+                    Date=item.properties["datetime"],
+                    Suffix=f'_{date.year}_{date.month:02d}_{date.day:02d}',
+                    Platform=item.properties.get("platform", "Sentinel-2")
+                )
+            except Exception as e:
+                print(f"Error parsing date for item {item.id}: {e}")
+                dst.update_tags(
+                    Title="Sentinel-2 RGB Composite",
+                    CloudCover=item.properties["eo:cloud_cover"],
+                    Date=item.properties["datetime"],
+                    Platform=item.properties.get("platform", "Sentinel-2")
+                )
+        memfile_list.append(memfile)
+        rgb_list.append(rgb)
     
-    rgb = np.stack([r, g, b], axis=0)
-
-    meta_b.update({
-        "count": 3,
-        "dtype": rgb.dtype,
-        "driver": "GTiff",
-        "transform": transform,
-        "crs": crs
-    })
-
-    memfile = MemoryFile()
-    with memfile.open(**meta_b) as dst:
-        dst.write(rgb[0], 1)
-        dst.write(rgb[1], 2)
-        dst.write(rgb[2], 3)
-        dst.update_tags(
-            Title="Sentinel-2 RGB Composite",
-            CloudCover=selected_item.properties["eo:cloud_cover"],
-            Date=selected_item.properties["datetime"],
-            Platform=selected_item.properties.get("platform", "Sentinel-2")
-        )
-
     # Return BytesIO object
-    return rgb, memfile
+    return rgb_list, memfile_list
 
 def save_image(memfile, path):
     """
@@ -138,13 +157,19 @@ def save_image(memfile, path):
         path (str): The path where the image will be saved.
     """
     with memfile.open() as src:
-        with rasterio.open(path, 'w', **src.meta) as dst:
-            dst.write(src.read())
-            dst.update_tags(**src.tags())
+        if src.tags().get('Suffix'):
+            with rasterio.open(path[:-4] + src.tags().get('Suffix') + '.tif', 'w', **src.meta) as dst:
+                
+                dst.write(src.read())
+                dst.update_tags(**src.tags())
+        else:
+            with rasterio.open(path, 'w', **src.meta) as dst:
+                dst.write(src.read())
+                dst.update_tags(**src.tags())
 
 if __name__ == "__main__":
     latitude, longitude = 51.482694952724614, 46.20856383098548
     cloud_cover = 30
-    date_range = ("2024-01-01", "2024-04-30")
+    date_range = ("2024-01-01", "2024-01-13")
 
     rgb, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=True)
