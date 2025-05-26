@@ -1,0 +1,27 @@
+[project]
+name = "sentinel2-downloader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "MehdiBits", email = "mehdi.boussaa1@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2.5",
+    "pystac-client>=0.8.6",
+    "shapely>=2.1.0",
+    "tqdm>=4.67.1",
+    "pillow>=11.2.1",
+    "planetary-computer>=1.0.0",
+    "rasterio>=1.4.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13"
+]
