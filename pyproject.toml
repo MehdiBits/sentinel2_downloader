@@ -23,5 +23,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "ipdb>=0.13.13"
+    "ipdb>=0.13.13",
+    "matplotlib>=3.10.3",
+    "rio-tiler>=7.7.3.post1",
 ]

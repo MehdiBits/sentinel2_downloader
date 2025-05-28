@@ -6,6 +6,7 @@ import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 from rasterio.crs import CRS
+from pyproj import Transformer
 
 def crop_image_to_bbox(
     image_path,
@@ -64,3 +65,9 @@ def delta_km_to_deg(lat, delta_x_km, delta_y_km):
     delta_lat_deg = delta_y_km / 111.32
     delta_lon_deg = delta_x_km / (111.32 * cos(radians(lat)))
     return (delta_lon_deg, delta_lat_deg)
+
+def reproject_bounds(bounds, src_crs, dst_crs):
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    minx, miny = transformer.transform(bounds[0], bounds[1])
+    maxx, maxy = transformer.transform(bounds[2], bounds[3])
+    return (minx, miny, maxx, maxy)

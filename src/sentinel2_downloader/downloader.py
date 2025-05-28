@@ -1,13 +1,18 @@
 import requests
 from tqdm import tqdm
 from shapely.geometry import box
+from shapely import Polygon
 from pystac_client import Client
 import numpy as np
 import planetary_computer
 import io
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
+from rasterio.warp import transform_bounds
 from dateutil.parser import isoparse
+from rio_tiler.io import Reader
+from .utils.geometry import reproject_bounds
 
 def download(url, verbose=False):
     """
@@ -37,7 +42,9 @@ def download(url, verbose=False):
             buffer.write(data)
 
     buffer.seek(0)
+    
     with rasterio.open(buffer) as src:
+
         band = src.read(1)
         meta = src.meta.copy()
         transform = src.transform
@@ -45,8 +52,34 @@ def download(url, verbose=False):
 
     return band, meta, transform, crs
 
+def download_bbox(url, bounds, max_size=512):
+    """
+    Downloads only the spatial bounding box from a COG using HTTP Range requests.
 
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=0.009, verbose=False, api='microsoft'):
+    Args:
+        url (str): URL to the COG file (e.g., Sentinel-2 band URL).
+        bounds (tuple): (minx, miny, maxx, maxy) in image CRS (usually EPSG:4326 for STAC assets).
+        max_size (int): Maximum pixel size for output image (preserves aspect ratio).
+
+    Returns:
+        tuple: (band_data, meta, transform, crs)
+    """
+    with Reader(url) as cog:
+        # WGS84 bounds (required by Planetary Computer for some reasons)
+        img = cog.part(bounds, max_size=max_size, dst_crs=cog.crs, bounds_crs="EPSG:4326")
+        band = img.data[0]
+
+        meta = cog.dataset.meta.copy()
+        meta.update({
+            "height": band.shape[0],
+            "width": band.shape[1],
+            "transform": img.transform,
+            "count": 1
+        })
+        return band, meta, meta["transform"], cog.crs
+
+
+def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=0.009, verbose=False, api='microsoft', bbox=None):
     
     if api == 'microsoft':
         API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -57,8 +90,16 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
     collection = "sentinel-2-l2a"
 
 
-    # Define a (roughly) 2km x 2km bounding box around the given coordinates
-    bbox = box(lon - bbox_delta, lat - bbox_delta, lon + bbox_delta, lat + bbox_delta)
+    # Define a (roughly) 2km x 2km bounding box around the given coordinates near the equator only
+    bbox2 = box(lon - bbox_delta, lat - bbox_delta, lon + bbox_delta, lat + bbox_delta)
+    
+    if bbox is None:
+        bbox = bbox2
+        bbox2 = None
+    else:
+        # Ensure bbox is a shapely box object
+        if not isinstance(bbox, Polygon):
+            bbox = box(*bbox)
     
     # Search for images containing the bouding box using the STAC API
     search = client.search(
@@ -95,20 +136,25 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
             green_href = assets["green"].href
             red_href = assets["red"].href
 
-        # Estimate file sizes before downloading
-        if verbose:
-            estimated_sizes = {}
-            for color, href in zip(["blue", "green", "red"], [blue_href, green_href, red_href]):
-                response = requests.head(href)
-                size = int(response.headers.get("Content-Length", 0)) / (1024 * 1024)
-                estimated_sizes[color] = size
-            
-            total_size = sum(estimated_sizes.values())
-            print(f"Estimated download size: {total_size:.2f} MB (Blue: {estimated_sizes['blue']:.2f} MB, Green: {estimated_sizes['green']:.2f} MB, Red: {estimated_sizes['red']:.2f} MB)")
 
-        b, meta_b, transform, crs = download(blue_href, verbose=verbose)
-        g, _, _, _ = download(green_href, verbose=verbose)
-        r, _, _, _ = download(red_href, verbose=verbose)
+        if bbox2 is None:
+            # Estimate file sizes before downloading
+            if verbose:
+                    estimated_sizes = {}
+                    for color, href in zip(["blue", "green", "red"], [blue_href, green_href, red_href]):
+                        response = requests.head(href)
+                        size = int(response.headers.get("Content-Length", 0)) / (1024 * 1024)
+                        estimated_sizes[color] = size
+                    
+                    total_size = sum(estimated_sizes.values())
+                    print(f"Estimated download size: {total_size:.2f} MB (Blue: {estimated_sizes['blue']:.2f} MB, Green: {estimated_sizes['green']:.2f} MB, Red: {estimated_sizes['red']:.2f} MB)")
+            b, meta_b, transform, crs = download(blue_href, verbose=verbose)
+            g, _, _, _ = download(green_href, verbose=verbose)
+            r, _, _, _ = download(red_href, verbose=verbose)
+        else:
+            b, meta_b, transform, crs = download_bbox(blue_href, bbox.bounds, max_size=1024)
+            g, _, _, _ = download_bbox(green_href, bbox.bounds, max_size=1024)
+            r, _, _, _ = download_bbox(red_href, bbox.bounds, max_size=1024)
 
         
         rgb = np.stack([r, g, b], axis=0)
@@ -120,7 +166,6 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
             "transform": transform,
             "crs": crs
         })
-
         memfile = MemoryFile()
         with memfile.open(**meta_b) as dst:
             dst.write(rgb[0], 1)
@@ -145,8 +190,7 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
                 )
         memfile_list.append(memfile)
         rgb_list.append(rgb)
-    
-    # Return BytesIO object
+
     return rgb_list, memfile_list
 
 def save_image(memfile, path):
@@ -167,9 +211,16 @@ def save_image(memfile, path):
                 dst.write(src.read())
                 dst.update_tags(**src.tags())
 
+
+
+
 if __name__ == "__main__":
     latitude, longitude = 51.482694952724614, 46.20856383098548
     cloud_cover = 30
     date_range = ("2024-01-01", "2024-01-13")
+    delta_x = 0.03
+    delta_y = 0.03
+    bbox_delta = [delta_x, delta_y]
 
-    rgb, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=True)
+    bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
+    rgb, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=True, bbox=bbox)
