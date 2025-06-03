@@ -8,11 +8,11 @@ import planetary_computer
 import io
 import rasterio
 from rasterio.io import MemoryFile
-from rasterio.transform import from_bounds
-from rasterio.warp import transform_bounds
 from dateutil.parser import isoparse
 from rio_tiler.io import Reader
-from .utils.geometry import reproject_bounds
+import argparse
+import os
+from utils.geometry import delta_km_to_deg
 
 def download(url, verbose=False):
     """
@@ -212,15 +212,39 @@ def save_image(memfile, path):
                 dst.update_tags(**src.tags())
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Sentinel-2 Image Downloader and Processor")
+    parser.add_argument('latitude', type=float, help="Latitude of the center point for image download")
+    parser.add_argument('longitude', type=float, help="Longitude of the center point for image download")
+    parser.add_argument('output_dir', type=str, help="Directory path for saving output results")
+    parser.add_argument('--cloud_cover', type=int, default=10, help="Maximum cloud cover percentage for image selection")
+    parser.add_argument('--date_range', type=str, nargs=2, default=("2024-01-01", "2024-03-01"), help="Date range for image selection (start, end)")
+    parser.add_argument('--bbox_delta', type=float, default=[3, 3], help="Delta in km for bounding box around the center point")
+    parser.add_argument('--verbose', action='store_true', help="Enable verbose output during download", default=False)
+    parser.add_argument('--api', type=str, choices=['microsoft', 'element84'], default='microsoft', help="API to use for downloading Sentinel-2 images (default: microsoft)")
 
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    latitude, longitude = 51.482694952724614, 46.20856383098548
-    cloud_cover = 30
-    date_range = ("2024-01-01", "2024-01-13")
-    delta_x = 0.03
-    delta_y = 0.03
-    bbox_delta = [delta_x, delta_y]
+    # Parsing of the command line arguments
+    args = parse_args()
+    latitude = args.latitude
+    longitude = args.longitude
+    cloud_cover = args.cloud_cover
+    date_range = args.date_range
+    bbox_delta = args.bbox_delta
+    verbose = args.verbose
+    api = args.api
+    output_dir = args.output_dir
 
+    bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
     bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
-    rgb, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=True, bbox=bbox)
+    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox)
+
+    if output_dir:
+        output_dir = output_dir.replace(' ', '_')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        for i, mem in enumerate(memfile):
+            image_path = os.path.join(output_dir, f"sentinel2_image_{i}.tif")
+            save_image(mem, image_path)
