@@ -78,18 +78,51 @@ def download_bbox(url, bounds, max_size=512):
         })
         return band, meta, meta["transform"], cog.crs
 
-
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=0.009, verbose=False, api='microsoft', bbox=None):
+def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=0.009, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02']):
+    """
+    Downloads Sentinel-2 images for a given latitude and longitude, with options for cloud cover, date range, and bounding box size.
     
+    Args:
+        lat (float): Latitude of the center point.
+        lon (float): Longitude of the center point.
+        cloud_cover (int): Maximum cloud cover percentage for image selection.
+        date_range (tuple): Start and end dates for image selection in ISO format (YYYY-MM-DD).
+        bbox_delta (float): Delta in degrees for the bounding box around the center point.
+        verbose (bool): If True, prints additional information during the download process.
+        api (str): API to use for downloading Sentinel-2 images ('microsoft' or 'element84').
+        bbox (tuple or None): Custom bounding box as a tuple of (minx, miny, maxx, maxy) in degrees. If None, a default bounding box is created.
+        bands (list): List of bands to download. Default is ['B04', 'B03', 'B02'].
+
+    Returns:
+        tuple: A list of downloaded images as NumPy arrays and a list of MemoryFile objects containing the downloaded images.
+    """
+
+    # api logic
+    file_suffix = bands
     if api == 'microsoft':
         API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
         client = Client.open(API_URL, modifier=planetary_computer.sign_inplace)
     elif api == 'element84':
         API_URL = "https://earth-search.aws.element84.com/v1"
         client = Client.open(API_URL)
-    collection = "sentinel-2-l2a"
+        band_names = {
+            "B04": "red",
+            "B03": "green",
+            "B02": "blue",
+            "B01": "coastal",
+            "B05": "rededge1",
+            "B06": "rededge2",
+            "B07": "rededge3",
+            "B08": "nir",
+            "B8A": "nir08",
+            "B09": "nir09",
+            "B10": "cirrus",
+            "B11": "swir16",
+            "B12": "swir22"
+        }
+        bands = [band_names[band] for band in bands]
 
-
+    # bbox logic
     # Define a (roughly) 2km x 2km bounding box around the given coordinates near the equator only
     bbox2 = box(lon - bbox_delta, lat - bbox_delta, lon + bbox_delta, lat + bbox_delta)
     
@@ -101,6 +134,16 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         if not isinstance(bbox, Polygon):
             bbox = box(*bbox)
     
+
+    arr_list, memfiles = _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client=client, file_suffix=file_suffix)
+
+    return arr_list, memfiles
+
+def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, file_suffix):
+    
+
+    collection = "sentinel-2-l2a"
+
     # Search for images containing the bouding box using the STAC API
     search = client.search(
         collections=[collection],
@@ -108,7 +151,6 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         query={"eo:cloud_cover": {"lt": cloud_cover}},
         datetime=f"{date_range[0]}/{date_range[1]}"
     )
-    
 
     items = search.item_collection()
     if not items or len(items) == 0:
@@ -121,77 +163,77 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
             print(f"Image ID: {item.id}, Cloud Cover: {item.properties['eo:cloud_cover']}%, Date: {item.properties['datetime']}")
 
     memfile_list = []
-    rgb_list = []
+    arr_list = []
 
+    bands_data = []
     for item in items:
         assets = item.assets
-        
-        # Get RGB bands download links (blue, green, red)
-        if api == 'microsoft': # Microsoft api is usually faster than element84
-            blue_href = assets["B02"].href
-            green_href = assets["B03"].href
-            red_href = assets["B04"].href
-        elif api == 'element84':
-            blue_href = assets["blue"].href
-            green_href = assets["green"].href
-            red_href = assets["red"].href
+        for band in bands:
+            link = assets[band].href
+            if link is None:
+                print(f"Band {band} not found in item {item.id}. Skipping this item.")
+                break
+            else:
+                b, meta_b, transform, crs = download_bbox(link, bbox.bounds)
+                bands_data.append([b, meta_b, transform, crs])
+                
 
+        if bands == ['B04', 'B03', 'B02']:
+            r = bands_data[0][0]  # Red band
+            g = bands_data[1][0]  # Green band
+            b = bands_data[2][0]  # Blue band
+            rgb = np.stack([r, g, b], axis=0)
 
-        if bbox2 is None:
-            # Estimate file sizes before downloading
-            if verbose:
-                    estimated_sizes = {}
-                    for color, href in zip(["blue", "green", "red"], [blue_href, green_href, red_href]):
-                        response = requests.head(href)
-                        size = int(response.headers.get("Content-Length", 0)) / (1024 * 1024)
-                        estimated_sizes[color] = size
-                    
-                    total_size = sum(estimated_sizes.values())
-                    print(f"Estimated download size: {total_size:.2f} MB (Blue: {estimated_sizes['blue']:.2f} MB, Green: {estimated_sizes['green']:.2f} MB, Red: {estimated_sizes['red']:.2f} MB)")
-            b, meta_b, transform, crs = download(blue_href, verbose=verbose)
-            g, _, _, _ = download(green_href, verbose=verbose)
-            r, _, _, _ = download(red_href, verbose=verbose)
-        else:
-            b, meta_b, transform, crs = download_bbox(blue_href, bbox.bounds, max_size=1024)
-            g, _, _, _ = download_bbox(green_href, bbox.bounds, max_size=1024)
-            r, _, _, _ = download_bbox(red_href, bbox.bounds, max_size=1024)
+            meta_b.update({
+                "count": 3,
+                "dtype": rgb.dtype,
+                "driver": "GTiff",
+                "transform": transform,
+                "crs": crs
+            })
 
-        
-        rgb = np.stack([r, g, b], axis=0)
+            memfile = MemoryFile()
+            with memfile.open(**meta_b) as dst:
+                dst.write(rgb[0], 1)
+                dst.write(rgb[1], 2)
+                dst.write(rgb[2], 3)
 
-        meta_b.update({
-            "count": 3,
-            "dtype": rgb.dtype,
-            "driver": "GTiff",
-            "transform": transform,
-            "crs": crs
-        })
-        memfile = MemoryFile()
-        with memfile.open(**meta_b) as dst:
-            dst.write(rgb[0], 1)
-            dst.write(rgb[1], 2)
-            dst.write(rgb[2], 3)
-            try:
                 date = isoparse(item.properties["datetime"])
                 dst.update_tags(
                     Title="Sentinel-2 RGB Composite",
                     CloudCover=item.properties["eo:cloud_cover"],
                     Date=item.properties["datetime"],
-                    Suffix=f'_{date.year}_{date.month:02d}_{date.day:02d}',
+                    Suffix=f'_{date.year}_{date.month:02d}_{date.day:02d}_RGB',
                     Platform=item.properties.get("platform", "Sentinel-2")
                 )
-            except Exception as e:
-                print(f"Error parsing date for item {item.id}: {e}")
-                dst.update_tags(
-                    Title="Sentinel-2 RGB Composite",
-                    CloudCover=item.properties["eo:cloud_cover"],
-                    Date=item.properties["datetime"],
-                    Platform=item.properties.get("platform", "Sentinel-2")
-                )
-        memfile_list.append(memfile)
-        rgb_list.append(rgb)
+            memfile_list.append(memfile)
+            arr_list.append(rgb)
 
-    return rgb_list, memfile_list
+            return arr_list, memfile_list
+        else:
+            for data, band_name in zip(bands_data, file_suffix):
+                b = data[0]
+                meta_b = data[1]
+                transform = data[2]
+                crs = data[3]
+
+                memfile = MemoryFile()
+                with memfile.open(**meta_b) as dst:
+                    dst.write(b, 1)
+
+                    date = isoparse(item.properties["datetime"])
+                    dst.update_tags(
+                        Title=f"Sentinel-2 {band_name} Band",
+                        CloudCover=item.properties["eo:cloud_cover"],
+                        Date=item.properties["datetime"],
+                        Suffix=f'_{date.year}_{date.month:02d}_{date.day:02d}_{band_name}',
+                        Platform=item.properties.get("platform", "Sentinel-2")
+                    )
+                memfile_list.append(memfile)
+                arr_list.append(b)
+
+            return arr_list, memfile_list
+
 
 def save_image(memfile, path):
     """
@@ -216,8 +258,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Sentinel-2 Image Downloader and Processor")
     parser.add_argument('latitude', type=float, help="Latitude of the center point for image download")
     parser.add_argument('longitude', type=float, help="Longitude of the center point for image download")
-    parser.add_argument('output_dir', type=str, help="Directory path for saving output results")
+    parser.add_argument('--output_dir', type=str, default=None, help="Directory path for saving output results")
     parser.add_argument('--cloud_cover', type=int, default=10, help="Maximum cloud cover percentage for image selection")
+    parser.add_argument('--bands', nargs='+', default=['B04', 'B03', 'B02'], help="Bands to download. Names are given using the B notation. (default: ['B04', 'B03', 'B02'])")
     parser.add_argument('--date_range', type=str, nargs=2, default=("2024-01-01", "2024-03-01"), help="Date range for image selection (start, end)")
     parser.add_argument('--bbox_delta', type=float, default=[3, 3], help="Delta in km for bounding box around the center point")
     parser.add_argument('--verbose', action='store_true', help="Enable verbose output during download", default=False)
@@ -236,10 +279,11 @@ if __name__ == "__main__":
     verbose = args.verbose
     api = args.api
     output_dir = args.output_dir
+    bands = args.bands
 
     bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
     bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
-    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox)
+    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api)
 
     if output_dir:
         output_dir = output_dir.replace(' ', '_')
