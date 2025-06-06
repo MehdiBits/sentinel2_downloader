@@ -12,7 +12,7 @@ from dateutil.parser import isoparse
 from rio_tiler.io import Reader
 import argparse
 import os
-from utils.geometry import delta_km_to_deg
+from .utils.geometry import delta_km_to_deg
 
 def download(url, verbose=False):
     """
@@ -98,13 +98,16 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
     """
 
     # api logic
-    file_suffix = bands
+    file_suffix = bands # To use as output file suffixes, need to get the band names before potential changes
+
     if api == 'microsoft':
         API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
         client = Client.open(API_URL, modifier=planetary_computer.sign_inplace)
     elif api == 'element84':
         API_URL = "https://earth-search.aws.element84.com/v1"
         client = Client.open(API_URL)
+        # Element84 uses different band names, so we need to map them
+        # to the standard Sentinel-2 band names for consistency
         band_names = {
             "B04": "red",
             "B03": "green",
@@ -209,7 +212,6 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
             memfile_list.append(memfile)
             arr_list.append(rgb)
 
-            return arr_list, memfile_list
         else:
             for data, band_name in zip(bands_data, file_suffix):
                 b = data[0]
@@ -232,10 +234,10 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
                 memfile_list.append(memfile)
                 arr_list.append(b)
 
-            return arr_list, memfile_list
+    return arr_list, memfile_list
 
 
-def save_image(memfile, path):
+def save_image(memfile, path, verbose=False):
     """
     Save the image from the MemoryFile to a specified path.
     Args:
@@ -248,10 +250,14 @@ def save_image(memfile, path):
                 
                 dst.write(src.read())
                 dst.update_tags(**src.tags())
+            if verbose:
+                print(f"Image saved to {path[:-4] + src.tags().get('Suffix') + '.tif'}")
         else:
             with rasterio.open(path, 'w', **src.meta) as dst:
                 dst.write(src.read())
                 dst.update_tags(**src.tags())
+                if verbose:
+                    print(f"Image saved to {path}")
 
 
 def parse_args():
@@ -292,3 +298,4 @@ if __name__ == "__main__":
         for i, mem in enumerate(memfile):
             image_path = os.path.join(output_dir, f"sentinel2_image_{i}.tif")
             save_image(mem, image_path)
+            print(f"Image saved to {image_path}")
