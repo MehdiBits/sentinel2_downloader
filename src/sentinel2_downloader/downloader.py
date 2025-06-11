@@ -1,17 +1,20 @@
 import requests
+import os
+import io
+
 from tqdm import tqdm
 from shapely.geometry import box
 from shapely import Polygon
 from pystac_client import Client
 import numpy as np
 import planetary_computer
-import io
+
 import rasterio
 from rasterio.io import MemoryFile
 from dateutil.parser import isoparse
 from rio_tiler.io import Reader
 import argparse
-import os
+
 from sentinel2_downloader.utils.geometry import delta_km_to_deg
 
 def download(url, verbose=False):
@@ -78,7 +81,7 @@ def download_bbox(url, bounds, max_size=512):
         })
         return band, meta, meta["transform"], cog.crs
 
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02']):
+def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02'], full=False):
     """
     Downloads Sentinel-2 images for a given latitude and longitude, with options for cloud cover, date range, and bounding box size.
     
@@ -128,21 +131,25 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         bands = [band_names[band] for band in bands]
 
     # bbox logic
-    # bbox delta can be given either as a tuple or a single float value, if single float value is given, it will be used for both latitude and longitude
-    if isinstance(bbox_delta, (int, float)):
-        bbox_delta = (bbox_delta, bbox_delta)
+    if bbox is None:
+        if isinstance(bbox_delta, (int, float)):
+            # bbox delta can be given either as a tuple or a single float value, if single float value is given, it will be used for both latitude and longitude
+            bbox_delta = (bbox_delta, bbox_delta)
 
-    # Ensure bbox is a shapely box object and Convert bbox_delta from km to degrees
-    if not isinstance(bbox, Polygon):
+        # If bbox is not provided, create a bounding box around the given latitude and longitude then create a Polygon from it
+        bbox_delta = delta_km_to_deg(lat, bbox_delta[0], bbox_delta[1])
+        bbox = (lon - bbox_delta[0], lat - bbox_delta[1], lon + bbox_delta[0], lat + bbox_delta[1])
         bbox = box(*bbox)
-        bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
-        bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
+    else:
+    # If bbox is provided, ensure it is a Polygon
+        if not isinstance(bbox, Polygon):
+            bbox = box(*bbox)
     
-    arr_list, memfiles = _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client=client, file_suffix=file_suffix)
+    arr_list, memfiles = _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client=client, file_suffix=file_suffix, full=full)
 
     return arr_list, memfiles
 
-def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, file_suffix):
+def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, file_suffix, full):
     
     # Search for images containing the bouding box using the STAC API
     search = client.search(
@@ -176,7 +183,12 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
                 print(f"Band {band} not found in item {item.id}. Skipping this item.")
                 break
             else:
-                b, meta_b, transform, crs = download_bbox(link, bbox.bounds)
+                if full:
+                # Download the full image
+                    b, meta_b, transform, crs = download(link, verbose=verbose)
+                else:
+                # Download only the bounding box
+                    b, meta_b, transform, crs = download_bbox(link, bbox.bounds)
                 bands_data.append([b, meta_b, transform, crs])
                 
 
@@ -270,7 +282,7 @@ def parse_args():
     parser.add_argument('--bbox_delta', type=float, default=[3, 3], help="Delta in km for bounding box around the center point")
     parser.add_argument('--verbose', action='store_true', help="Enable verbose output during download", default=False)
     parser.add_argument('--api', type=str, choices=['microsoft', 'element84'], default='microsoft', help="API to use for downloading Sentinel-2 images (default: microsoft)")
-
+    parser.add_argument('--full', action='store_true', help="Download full images instead of just the bounding box")
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -285,10 +297,11 @@ if __name__ == "__main__":
     api = args.api
     output_dir = args.output_dir
     bands = args.bands
+    full = args.full
 
     bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
     bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
-    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api)
+    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api, full=full)
 
     if output_dir and memfile is not None:
         output_dir = output_dir.replace(' ', '_')
