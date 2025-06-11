@@ -11,6 +11,7 @@ import planetary_computer
 
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.warp import transform_bounds
 from dateutil.parser import isoparse
 from rio_tiler.io import Reader
 import argparse
@@ -68,8 +69,12 @@ def download_bbox(url, bounds, max_size=512):
         tuple: (band_data, meta, transform, crs)
     """
     with Reader(url) as cog:
-        # WGS84 bounds (required by Planetary Computer for some reasons)
-        img = cog.part(bounds, max_size=max_size, dst_crs=cog.crs, bounds_crs="EPSG:4326")
+        # Fix if VRT start acting weird 
+        # from rasterio.warp import transform_bounds
+        # bounds = transform_bounds(4326, cog.crs, *bounds)
+        # img = cog.part(bounds, dst_crs=cog.crs, bounds_crs=cog.crs)
+
+        img = cog.part(bounds, dst_crs=cog.crs, bounds_crs="EPSG:4326")
         band = img.data[0]
 
         meta = cog.dataset.meta.copy()
