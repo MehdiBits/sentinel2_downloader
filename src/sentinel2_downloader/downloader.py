@@ -12,7 +12,7 @@ from dateutil.parser import isoparse
 from rio_tiler.io import Reader
 import argparse
 import os
-from .utils.geometry import delta_km_to_deg
+from sentinel2_downloader.utils.geometry import delta_km_to_deg
 
 def download(url, verbose=False):
     """
@@ -78,7 +78,7 @@ def download_bbox(url, bounds, max_size=512):
         })
         return band, meta, meta["transform"], cog.crs
 
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=0.009, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02']):
+def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02']):
     """
     Downloads Sentinel-2 images for a given latitude and longitude, with options for cloud cover, date range, and bounding box size.
     
@@ -99,6 +99,8 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
 
     # api logic
     file_suffix = bands # To use as output file suffixes, need to get the band names before potential changes
+
+    
 
     if api == 'microsoft':
         API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -126,30 +128,25 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         bands = [band_names[band] for band in bands]
 
     # bbox logic
-    # Define a (roughly) 2km x 2km bounding box around the given coordinates near the equator only
-    bbox2 = box(lon - bbox_delta, lat - bbox_delta, lon + bbox_delta, lat + bbox_delta)
-    
-    if bbox is None:
-        bbox = bbox2
-        bbox2 = None
-    else:
-        # Ensure bbox is a shapely box object
-        if not isinstance(bbox, Polygon):
-            bbox = box(*bbox)
-    
+    # bbox delta can be given either as a tuple or a single float value, if single float value is given, it will be used for both latitude and longitude
+    if isinstance(bbox_delta, (int, float)):
+        bbox_delta = (bbox_delta, bbox_delta)
 
+    # Ensure bbox is a shapely box object and Convert bbox_delta from km to degrees
+    if not isinstance(bbox, Polygon):
+        bbox = box(*bbox)
+        bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
+        bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
+    
     arr_list, memfiles = _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client=client, file_suffix=file_suffix)
 
     return arr_list, memfiles
 
 def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, file_suffix):
     
-
-    collection = "sentinel-2-l2a"
-
     # Search for images containing the bouding box using the STAC API
     search = client.search(
-        collections=[collection],
+        collections=["sentinel-2-l2a"],
         intersects=bbox,
         query={"eo:cloud_cover": {"lt": cloud_cover}},
         datetime=f"{date_range[0]}/{date_range[1]}"
@@ -168,9 +165,11 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
     memfile_list = []
     arr_list = []
 
-    bands_data = []
-    for item in items:
+    
+    for item in tqdm(items, desc="Processing Items", leave=False, disable=not verbose):
         assets = item.assets
+        bands_data = []
+
         for band in bands:
             link = assets[band].href
             if link is None:
@@ -181,7 +180,7 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
                 bands_data.append([b, meta_b, transform, crs])
                 
 
-        if bands == ['B04', 'B03', 'B02']:
+        if bands == ['B04', 'B03', 'B02'] or bands == ['red', 'green', 'blue']:
             r = bands_data[0][0]  # Red band
             g = bands_data[1][0]  # Green band
             b = bands_data[2][0]  # Blue band
@@ -291,7 +290,7 @@ if __name__ == "__main__":
     bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
     _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api)
 
-    if output_dir:
+    if output_dir and memfile is not None:
         output_dir = output_dir.replace(' ', '_')
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
