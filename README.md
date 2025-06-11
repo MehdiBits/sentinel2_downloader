@@ -42,7 +42,7 @@ This package can both be used as script to be launched from the CLI or imported 
 
 ### CLI usage
 
-### (Recommended) Using uv
+#### (Recommended) Using uv
 
 ```bash
 uv run sentinel_downloader.py latitude longitude --output_dir path/to/output
@@ -54,10 +54,24 @@ Alternatively, if you want to launch the script from another directory you can u
 uv run --project full/path/to/sentinel_downloader.py latitude longitude --output_dir path/to/output
 ```
 
-### Wihtout uv
+#### Wihtout uv
 
 ```bash
 python sentinel_downloader.py latitude longitude --output_dir path/to/output
+```
+
+### Python package usage
+
+```python
+from sentinel2_downloader import get_sentinel2_image, save_image
+
+latitude, longitude = 48.8587, 2.2934 # Effeil Tower coordinates
+rgb_images, memfiles = get_sentinel2_image(latitude, longitude)
+
+len_memfile = len(memfiles)
+for idx, memfile in enumerate(memfiles):
+    save_image(memfile, '.')
+    print(f'Saved image {idx} out of {len_memfile} images.')
 ```
 
 A few optional parameters exist:
@@ -65,7 +79,7 @@ A few optional parameters exist:
 - `--output_dir`: Path to save the downloaded images.
 - `--cloud_cover`: Maximum cloud cover percentage (default: 10).
 - `--date_range`: Start and end date in ISO format (default: 2024-01-01 2024-03-01).
-- `--bands`: Sentinel-2 bands to download (default: B04 B03 B02).
+- `--bands`: Sentinel-2 bands to download (default: B04 B03 B02). Accepts : "B01, B02, B03, B04, B05, B06, B07, B08, B09, B10, B11, B12".
 - `--bbox_delta`: Bounding box size around the point in km (default: 3).
 - `--api`: Choose between `microsoft` or `element84`. Microsoft api need a session token to use, one is generated automatically on the fly however it expires after 45 minutes. Use element84 for longer downloads.
 - `--verbose`: Enable verbose logging.
