@@ -10,5 +10,6 @@ wheels/
 .venv
 .DS_Store
 
-# Image files
+# Image files and accompanying metadata
 *.tif
+*.xml
