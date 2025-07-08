@@ -17,6 +17,7 @@ from rio_tiler.io import Reader
 import argparse
 
 from sentinel2_downloader.utils.geometry import delta_km_to_deg
+from sentinel2_downloader.utils.metadata import change_arr
 
 def download(url, verbose=False):
     """
@@ -86,7 +87,7 @@ def download_bbox(url, bounds, max_size=512):
         })
         return band, meta, meta["transform"], cog.crs
 
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02'], full=False):
+def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02'], full=False, superres=False):
     """
     Downloads Sentinel-2 images for a given latitude and longitude, with options for cloud cover, date range, and bounding box size.
     
@@ -100,6 +101,8 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         api (str): API to use for downloading Sentinel-2 images ('microsoft' or 'element84').
         bbox (tuple or None): Custom bounding box as a tuple of (minx, miny, maxx, maxy) in degrees. If None, a default bounding box is created.
         bands (list): List of bands to download. Default is ['B04', 'B03', 'B02'].
+        full (bool): If True, downloads the full image; if False, downloads only the bounding box.
+        superres (bool): If True, applies super-resolution to the downloaded images.
 
     Returns:
         tuple: A list of downloaded images as NumPy arrays and a list of MemoryFile objects containing the downloaded images.
@@ -151,6 +154,13 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
             bbox = box(*bbox)
     
     arr_list, memfiles = _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client=client, file_suffix=file_suffix, full=full)
+
+    if superres:
+        import sentinel2_downloader.utils.superres as sr
+        bands_len = len(bands)
+        arr_subdivided = [arr_list[i:i + bands_len] for i in range(0, len(arr_list), bands_len)]
+        arr_sr = sr.upscale_images(arr_subdivided)
+        arr_list, memfiles = arr_sr, change_arr(memfiles, arr_sr)
 
     return arr_list, memfiles
 
@@ -291,7 +301,6 @@ def parse_args():
     return parser.parse_args()
 
 if __name__ == "__main__":
-    # Parsing of the command line arguments
     args = parse_args()
     latitude = args.latitude
     longitude = args.longitude
