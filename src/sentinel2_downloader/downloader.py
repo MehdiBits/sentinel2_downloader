@@ -102,7 +102,7 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
         bbox (tuple or None): Custom bounding box as a tuple of (minx, miny, maxx, maxy) in degrees. If None, a default bounding box is created.
         bands (list): List of bands to download. Default is ['B04', 'B03', 'B02'].
         full (bool): If True, downloads the full image; if False, downloads only the bounding box.
-        superres (bool): If True, applies super-resolution to the downloaded images.
+        superres (bool): If True, applies super-resolution to the downloaded images. BEWARE: This requires the `sentinel2_superres` package to be installed. Additionally, the resulting image will be RGB.
 
     Returns:
         tuple: A list of downloaded images as NumPy arrays and a list of MemoryFile objects containing the downloaded images.
@@ -158,9 +158,15 @@ def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "202
     if superres:
         import sentinel2_downloader.utils.superres as sr
         bands_len = len(bands)
+        # We need to group the images (bands) by dates, so we can apply super-resolution to each group of bands
         arr_subdivided = [arr_list[i:i + bands_len] for i in range(0, len(arr_list), bands_len)]
+        # memfiles_subdivided = [memfiles[i:i + bands_len] for i in range(0, len(memfiles), bands_len)]
+        
         arr_sr = sr.upscale_images(arr_subdivided)
-        arr_list, memfiles = arr_sr, change_arr(memfiles, arr_sr)
+
+        # Create a list of array where each elements is a band of the super-resolved image at a specific date
+        arr_list = list(arr_sr.reshape(-1, *arr_sr.shape[2:]))
+        memfiles = change_arr(memfiles, arr_list)
 
     return arr_list, memfiles
 
@@ -298,6 +304,7 @@ def parse_args():
     parser.add_argument('--verbose', action='store_true', help="Enable verbose output during download", default=False)
     parser.add_argument('--api', type=str, choices=['microsoft', 'element84'], default='microsoft', help="API to use for downloading Sentinel-2 images (default: microsoft)")
     parser.add_argument('--full', action='store_true', help="Download full images instead of just the bounding box")
+    parser.add_argument('--sr', action='store_true', help="Applies super-resolution to the downloaded images. BEWARE: This requires the `sentinel2_superres` package to be installed. Additionally, the resulting image will be RGB. Only works if bands are B02, B03, B04, B08", default=False)
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -312,16 +319,18 @@ if __name__ == "__main__":
     output_dir = args.output_dir
     bands = args.bands
     full = args.full
+    superres = args.sr
 
     bbox_delta = delta_km_to_deg(latitude, bbox_delta[0], bbox_delta[1])
     bbox = (longitude - bbox_delta[0], latitude - bbox_delta[1], longitude + bbox_delta[0], latitude + bbox_delta[1])
-    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api, full=full)
+    _, memfile = get_sentinel2_image(latitude, longitude, cloud_cover, date_range, verbose=verbose, bbox=bbox, bands=bands, api=api, full=full, superres=superres)
 
     if output_dir and memfile is not None:
         output_dir = output_dir.replace(' ', '_')
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         for i, mem in enumerate(memfile):
+            import ipdb; ipdb.set_trace()
             image_path = os.path.join(output_dir, f"sentinel2_image_{i}.tif")
             save_image(mem, image_path)
             print(f"Image saved to {image_path}")
