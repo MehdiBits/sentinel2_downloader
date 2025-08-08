@@ -18,6 +18,7 @@ import argparse
 
 from sentinel2_downloader.utils.geometry import delta_km_to_deg
 from sentinel2_downloader.utils.metadata import change_arr
+from sentinel2_downloader.utils.exceptions import NoImagesFoundError
 
 def download(url, verbose=False):
     """
@@ -87,7 +88,7 @@ def download_bbox(url, bounds, max_size=512):
         })
         return band, meta, meta["transform"], cog.crs
 
-def get_sentinel2_image(lat, lon, cloud_cover=10, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02'], full=False, superres=False):
+def get_sentinel2_image(lat, lon, cloud_cover=20, date_range=("2024-01-01", "2024-03-01"), bbox_delta=2, verbose=False, api='microsoft', bbox=None, bands=['B04', 'B03', 'B02'], full=False, superres=False):
     """
     Downloads Sentinel-2 images for a given latitude and longitude, with options for cloud cover, date range, and bounding box size.
     
@@ -179,12 +180,10 @@ def _get_sentinel2_image(cloud_cover, date_range, verbose, bbox, bands, client, 
         query={"eo:cloud_cover": {"lt": cloud_cover}},
         datetime=f"{date_range[0]}/{date_range[1]}"
     )
-
     items = search.item_collection()
     if not items or len(items) == 0:
-        print("No suitable images found.")
-        return None, None
-    
+        raise NoImagesFoundError('No suitable satellite images found in those dates')
+
     if verbose:
         print(f"Found {len(items)} images matching the criteria.")
         for item in items:
